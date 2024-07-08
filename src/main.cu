@@ -27,17 +27,18 @@
 }
 
 struct CSR {
-    std::vector<size_t> col_index;
-    std::vector<size_t> row_index;
-    std::vector<float>  v;
-    size_t rows;
-    size_t cols;
+    std::vector<int32_t> col_index;
+    std::vector<int32_t> row_index;
+    std::vector<float>   v;
+    int32_t rows;
+    int32_t cols;
+    int32_t nnz;
 };
 
 struct COO_entry {
-    size_t i;
-    size_t j;
-    float v;
+    int32_t i;
+    int32_t j;
+    float   v;
 };
 
 CSR load_matrix_mm(std::string path) {
@@ -53,9 +54,10 @@ CSR load_matrix_mm(std::string path) {
     f >> rows >> cols >> nnz;
     out.rows = rows;
     out.cols = cols;
+    out.nnz = nnz;
 
     for (size_t c = 0; c < nnz; c++) {
-        size_t i, j;
+        int32_t i, j;
         float value;
         f >> i >> j >> value;
         entries.push_back(COO_entry{i-1, j-1, value});
@@ -72,7 +74,7 @@ CSR load_matrix_mm(std::string path) {
     std::sort(entries.begin(), entries.end(), compare);
 
     /* generate CSR matrix from sorted COO */
-    out.row_index = std::vector<size_t>(rows+1, 0);
+    out.row_index = std::vector<int32_t>(rows+1, 0);
     for (size_t i = 0; i < nnz; i++) {
         auto entry = entries[i];
         out.row_index[entry.i + 1] += 1;
@@ -156,17 +158,17 @@ int main(int argc, char **argv) {
     CHECK_CUDA( 
             cudaMemcpy(
                     d_rows, 
-                    matrix.row_index.data(), 
-                    matrix.row_index.size() * sizeof(int), 
+                    matrix.row_index.data(),
+                    matrix.row_index.size() * sizeof(int),
                     cudaMemcpyHostToDevice
             )
     );
 
     CHECK_CUDA( 
             cudaMemcpy(
-                    d_v, 
-                    matrix.v.data(), 
-                    matrix.v.size() * sizeof(float), 
+                    d_v,
+                    matrix.v.data(),
+                    matrix.v.size() * sizeof(float),
                     cudaMemcpyHostToDevice
             )
     );
@@ -266,6 +268,6 @@ int main(int argc, char **argv) {
             )
     );
 
-    std::cout << "\nRESULT:\n";
+    std::cout << "\nRESULT (cuSPARSE):\n";
     print_csr(rows, cols, v, matrix.row_index.size(), matrix.col_index.size(), matrix.v.size());
 }
