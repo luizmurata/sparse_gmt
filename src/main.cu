@@ -40,11 +40,14 @@ struct CSR {
     int32_t nnz;
 
     /* GPU Data */
+    bool in_gpu;
     int32_t *d_cols;
     int32_t *d_rows;
     float   *d_v;
+    cusparseSpMatDescr_t desc;
 
     void to_gpu(cusparseHandle_t handle);
+    ~CSR();
 };
 
 cusparseHandle_t get_handle() {
@@ -163,6 +166,17 @@ void CSR::to_gpu(cusparseHandle_t handle) {
     this->d_rows = d_rows;
     this->d_cols = d_cols;
     this->d_v = d_v;
+    this->desc = desc;
+    this->in_gpu = true;
+}
+
+CSR::~CSR() {
+    if (this->in_gpu) {
+        std::cout << "Freeing memory..." << std::endl;
+        CHECK_CUDA( cudaFree(this->d_cols) )
+        CHECK_CUDA( cudaFree(this->d_rows) )
+        CHECK_CUDA( cudaFree(this->d_v) )
+    }
 }
 
 /* Naive algorithm */
@@ -200,79 +214,8 @@ CSR transpose_cpu(const CSR& input) {
     return out;
 }
 
-void print_csr(const CSR& matrix) {
-    std::cout << "COL: ";
-    for (auto elem : matrix.col_index) {
-        std::cout << elem << " ";
-    }
-    std::cout << "\n";
-
-    std::cout << "ROW: ";
-    for (auto elem : matrix.row_index) {
-        std::cout << elem << " ";
-    }
-    std::cout << "\n";
-
-    std::cout << "VAL: ";
-    for (auto elem : matrix.v) {
-        std::cout << elem << " ";
-    }
-    std::cout << "\n";
-}
-
-void print_csr(
-        int *col_index,
-        int *row_index,
-        float *v,
-        size_t col_size,
-        size_t row_size,
-        size_t v_size
-) {
-    std::cout << "COL: ";
-    for (size_t i = 0; i < col_size; i++) {
-        std::cout << col_index[i] << " ";
-    }
-    std::cout << "\n";
-
-    std::cout << "ROW: ";
-    for (size_t i = 0; i < row_size; i++) {
-        std::cout << row_index[i] << " ";
-    }
-    std::cout << "\n";
-
-    std::cout << "VAL: ";
-    for (size_t i = 0; i < v_size; i++) {
-        std::cout << v[i] << " ";
-    }
-    std::cout << "\n";
-}
-
-int main(int argc, char **argv) {
-    /* Check parameters passed */
-    if (argc < 2) {
-        std::cerr << "Error: Missing matrix data path." << std::endl;
-        std::cerr << "Usage: ./transpose <path> [OPTIONAL: <device id>]" << std::endl;
-        return -1;
-    }
-
-    auto matrix = load_matrix_mm(argv[1]);
-    int device = (argc > 2) ? atoi(argv[2]) : 0;
-    CHECK_CUDA( cudaSetDevice(device) )
-
-#ifdef DEBUG
-    std::cout << "INPUT MATRIX:\n";
-    print_csr(matrix);
-#endif
-
-    /* CPU transpose */
-    auto t = transpose_cpu(matrix);
-#ifdef DEBUG
-    std::cout << "\nRESULT (cpu):\n";
-    print_csr(t);
-#endif
-    auto handle = get_handle();
-    matrix.to_gpu(handle);
-
+/* CUSPARSE transpose */
+CSR transpose_cusparse(CSR matrix, cusparseHandle_t handle) {
     /* Create buffers for the transposed matrix */
     int *d_rows_t, *d_cols_t;
     float *d_v_t;
@@ -350,6 +293,105 @@ int main(int argc, char **argv) {
                     cudaMemcpyDeviceToHost
             )
     );
+
+    /* Create the transposed matrix */
+    CSR out;
+    out.rows = matrix.cols;
+    out.cols = matrix.rows;
+    out.nnz  = matrix.nnz;
+    out.d_cols = d_cols_t;
+    out.d_rows = d_rows_t;
+    out.d_v = d_v_t;
+
+    for (size_t i = 0; i < matrix.col_index.size(); i++)
+        out.row_index.push_back(rows[i]);
+    delete []rows;
+
+    for (size_t i = 0; i < matrix.row_index.size(); i++)
+        out.col_index.push_back(cols[i]);
+    delete []cols;
+
+    for (size_t i = 0; i < matrix.v.size(); i++)
+        out.v.push_back(v[i]);
+    delete []v;
+    
+    return out;
+}
+
+void print_csr(const CSR& matrix) {
+    std::cout << "COL: ";
+    for (auto elem : matrix.col_index) {
+        std::cout << elem << " ";
+    }
+    std::cout << "\n";
+
+    std::cout << "ROW: ";
+    for (auto elem : matrix.row_index) {
+        std::cout << elem << " ";
+    }
+    std::cout << "\n";
+
+    std::cout << "VAL: ";
+    for (auto elem : matrix.v) {
+        std::cout << elem << " ";
+    }
+    std::cout << "\n";
+}
+
+void print_csr(
+        int *col_index,
+        int *row_index,
+        float *v,
+        size_t col_size,
+        size_t row_size,
+        size_t v_size
+) {
+    std::cout << "COL: ";
+    for (size_t i = 0; i < col_size; i++) {
+        std::cout << col_index[i] << " ";
+    }
+    std::cout << "\n";
+
+    std::cout << "ROW: ";
+    for (size_t i = 0; i < row_size; i++) {
+        std::cout << row_index[i] << " ";
+    }
+    std::cout << "\n";
+
+    std::cout << "VAL: ";
+    for (size_t i = 0; i < v_size; i++) {
+        std::cout << v[i] << " ";
+    }
+    std::cout << "\n";
+}
+
+int main(int argc, char **argv) {
+    /* Check parameters passed */
+    if (argc < 2) {
+        std::cerr << "Error: Missing matrix data path." << std::endl;
+        std::cerr << "Usage: ./transpose <path> [OPTIONAL: <device id>]" << std::endl;
+        return -1;
+    }
+
+    auto matrix = load_matrix_mm(argv[1]);
+    int device = (argc > 2) ? atoi(argv[2]) : 0;
+    CHECK_CUDA( cudaSetDevice(device) )
+
+#ifdef DEBUG
+    std::cout << "INPUT MATRIX:\n";
+    print_csr(matrix);
+#endif
+
+    /* CPU transpose */
+    auto t = transpose_cpu(matrix);
+#ifdef DEBUG
+    std::cout << "\nRESULT (cpu):\n";
+    print_csr(t);
+#endif
+    auto handle = get_handle();
+    matrix.to_gpu(handle);
+    t = transpose_cusparse(matrix, handle);
+
 
 #ifdef DEBUG
     std::cout << "\nRESULT (cuSPARSE):\n";
