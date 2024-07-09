@@ -1,8 +1,11 @@
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <exception>
 #include <iostream>
 #include <fstream>
 #include <limits>
+#include <stdexcept>
 #include <vector>
 #include <cusparse.h>
 
@@ -43,14 +46,17 @@ struct COO_entry {
 
 CSR load_matrix_mm(std::string path) {
     /* load file data */
-    CSR out;
     std::ifstream f(path);
-    size_t rows, cols, nnz;
-    std::vector<COO_entry> entries;
+    if (f.fail()) {
+        throw std::invalid_argument("Error: File not found.");
+    }
 
     while (f.peek() == '%')
         f.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
+    CSR out;
+    size_t rows, cols, nnz;
+    std::vector<COO_entry> entries;
     f >> rows >> cols >> nnz;
     out.rows = rows;
     out.cols = cols;
@@ -58,9 +64,9 @@ CSR load_matrix_mm(std::string path) {
 
     for (size_t c = 0; c < nnz; c++) {
         int32_t i, j;
-        float value;
-        f >> i >> j >> value;
-        entries.push_back(COO_entry{i-1, j-1, value});
+        float vue;
+        f >> i >> j >> vue;
+        entries.push_back(COO_entry{i-1, j-1, vue});
     }
 
     f.close();
@@ -84,6 +90,41 @@ CSR load_matrix_mm(std::string path) {
     for (size_t i = 0; i < rows; i++) {
         out.row_index[i + 1] += out.row_index[i];
     }
+
+    return out;
+}
+
+/* Naive algorithm */
+CSR transpose_cpu(const CSR& input) {
+    /* Output matrix */
+    CSR out{
+        std::vector<int32_t>(input.nnz, 0),
+        std::vector<int32_t>(input.rows + 2, 0),
+        std::vector<float>(input.nnz, 0.0),
+        input.rows,
+        input.cols,
+        input.nnz
+    };
+
+    /* For each column, count elements and asign them to the rows */
+    for (size_t i = 0; i < input.nnz; ++i) {
+        ++out.row_index[input.col_index[i] + 2];
+    }
+
+    /* Shifted incremental sums */
+    for (size_t i = 2; i < out.row_index.size(); ++i) {
+        out.row_index[i] += out.row_index[i - 1];
+    }
+
+    /* Transpose values */
+    for (size_t i = 0; i < input.nnz - 1; ++i) {
+        for (size_t j = input.row_index[i]; j < input.row_index[i + 1]; ++j) {
+            size_t index = out.row_index[input.col_index[j] + 1]++;
+            out.v[index] = input.v[j];
+            out.col_index[index] = i;
+        }
+    }
+    out.row_index.pop_back();
 
     return out;
 }
@@ -136,8 +177,28 @@ void print_csr(
 }
 
 int main(int argc, char **argv) {
-    auto matrix = load_matrix_mm("../dataset/test.mtx");
+    /* Check parameters passed */
+    if (argc < 2) {
+        std::cerr << "Error: Missing matrix data path." << std::endl;
+        std::cerr << "Usage: ./transpose <path> [OPTIONAL: <device id>]" << std::endl;
+        return -1;
+    }
+
+    auto matrix = load_matrix_mm(argv[1]);
+    int device = (argc > 2) ? atoi(argv[2]) : 0;
+    CHECK_CUDA( cudaSetDevice(device) )
+
+#ifdef DEBUG
+    std::cout << "INPUT MATRIX:\n";
     print_csr(matrix);
+#endif
+
+    /* CPU transpose */
+    auto t = transpose_cpu(matrix);
+#ifdef DEBUG
+    std::cout << "\nRESULT (cpu):\n";
+    print_csr(t);
+#endif
 
     /* Load to GPU Memory */
     int *d_rows, *d_cols;
@@ -149,8 +210,8 @@ int main(int argc, char **argv) {
     CHECK_CUDA( 
             cudaMemcpy(
                     d_cols, 
-                    matrix.col_index.data(), 
-                    matrix.col_index.size() * sizeof(int), 
+                    matrix.col_index.data(),
+                    matrix.col_index.size() * sizeof(int),
                     cudaMemcpyHostToDevice
             )
     );
@@ -177,14 +238,14 @@ int main(int argc, char **argv) {
     cusparseHandle_t handle = nullptr;
     cusparseSpMatDescr_t A;
     CHECK_CUSPARSE( cusparseCreate(&handle) )
-    CHECK_CUSPARSE( 
+    CHECK_CUSPARSE(
             cusparseCreateCsr(
                 &A,
                 matrix.rows,
                 matrix.cols,
                 matrix.v.size(),
                 d_rows, d_cols,
-                d_v, 
+                d_v,
                 CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
                 CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F
             )
@@ -206,13 +267,13 @@ int main(int argc, char **argv) {
             handle,
             matrix.rows,
             matrix.cols,
-            matrix.v.size(), 
+            matrix.v.size(),
             d_v, d_rows, d_cols,
-            d_v_t, d_cols_t, d_rows_t, 
+            d_v_t, d_cols_t, d_rows_t,
             CUDA_R_32F,
             CUSPARSE_ACTION_NUMERIC,
             CUSPARSE_INDEX_BASE_ZERO,
-            CUSPARSE_CSR2CSC_ALG_DEFAULT, 
+            CUSPARSE_CSR2CSC_ALG_DEFAULT,
             &bufferSize
         )
     )
@@ -223,13 +284,13 @@ int main(int argc, char **argv) {
             handle,
             matrix.rows,
             matrix.cols,
-            matrix.v.size(), 
+            matrix.v.size(),
             d_v, d_rows, d_cols,
-            d_v_t, d_cols_t, d_rows_t, 
+            d_v_t, d_cols_t, d_rows_t,
             CUDA_R_32F,
             CUSPARSE_ACTION_NUMERIC,
             CUSPARSE_INDEX_BASE_ZERO,
-            CUSPARSE_CSR2CSC_ALG_DEFAULT, 
+            CUSPARSE_CSR2CSC_ALG_DEFAULT,
             buffer
         )
     )
@@ -268,6 +329,9 @@ int main(int argc, char **argv) {
             )
     );
 
+#ifdef DEBUG
     std::cout << "\nRESULT (cuSPARSE):\n";
     print_csr(rows, cols, v, matrix.row_index.size(), matrix.col_index.size(), matrix.v.size());
+#endif
+    return 0;
 }
