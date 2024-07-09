@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <exception>
 #include <iostream>
 #include <fstream>
 #include <limits>
@@ -9,13 +8,15 @@
 #include <vector>
 #include <cusparse.h>
 
+#define TRIALS 1000
+
 #define CHECK_CUDA(func)                                                       \
 {                                                                              \
     cudaError_t status = (func);                                               \
     if (status != cudaSuccess) {                                               \
         printf("CUDA API failed at line %d with error: %s (%d)\n",             \
                __LINE__, cudaGetErrorString(status), status);                  \
-        return EXIT_FAILURE;                                                   \
+        exit(EXIT_FAILURE);                                                    \
     }                                                                          \
 }
 
@@ -25,18 +26,32 @@
     if (status != CUSPARSE_STATUS_SUCCESS) {                                   \
         printf("CUSPARSE API failed at line %d with error: %s (%d)\n",         \
                __LINE__, cusparseGetErrorString(status), status);              \
-        return EXIT_FAILURE;                                                   \
+        exit(EXIT_FAILURE);                                                    \
     }                                                                          \
 }
 
 struct CSR {
+    /* CPU Data */
     std::vector<int32_t> col_index;
     std::vector<int32_t> row_index;
     std::vector<float>   v;
     int32_t rows;
     int32_t cols;
     int32_t nnz;
+
+    /* GPU Data */
+    int32_t *d_cols;
+    int32_t *d_rows;
+    float   *d_v;
+
+    void to_gpu(cusparseHandle_t handle);
 };
+
+cusparseHandle_t get_handle() {
+    cusparseHandle_t handle = nullptr;
+    CHECK_CUSPARSE( cusparseCreate(&handle) )
+    return handle;
+}
 
 struct COO_entry {
     int32_t i;
@@ -92,6 +107,62 @@ CSR load_matrix_mm(std::string path) {
     }
 
     return out;
+}
+
+void CSR::to_gpu(cusparseHandle_t handle) {
+    /* Load to GPU Memory */
+    int *d_rows, *d_cols;
+    float *d_v;
+    CHECK_CUDA( cudaMalloc((void**) &d_cols, this->col_index.size() * sizeof(int)) );
+    CHECK_CUDA( cudaMalloc((void**) &d_rows, this->row_index.size() * sizeof(int)) );
+    CHECK_CUDA( cudaMalloc((void**) &d_v,    this->v.size() * sizeof(float)) );
+
+    CHECK_CUDA( 
+            cudaMemcpy(
+                    d_cols, 
+                    this->col_index.data(),
+                    this->col_index.size() * sizeof(int),
+                    cudaMemcpyHostToDevice
+            )
+    );
+
+    CHECK_CUDA( 
+            cudaMemcpy(
+                    d_rows, 
+                    this->row_index.data(),
+                    this->row_index.size() * sizeof(int),
+                    cudaMemcpyHostToDevice
+            )
+    );
+
+    CHECK_CUDA( 
+            cudaMemcpy(
+                    d_v,
+                    this->v.data(),
+                    this->v.size() * sizeof(float),
+                    cudaMemcpyHostToDevice
+            )
+    );
+
+    /* Load to cuSPARSE */
+    cusparseSpMatDescr_t desc;
+    CHECK_CUSPARSE( cusparseCreate(&handle) )
+    CHECK_CUSPARSE(
+            cusparseCreateCsr(
+                &desc,
+                this->rows,
+                this->cols,
+                this->v.size(),
+                d_rows, d_cols,
+                d_v,
+                CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+                CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F
+            )
+    )
+
+    this->d_rows = d_rows;
+    this->d_cols = d_cols;
+    this->d_v = d_v;
 }
 
 /* Naive algorithm */
@@ -199,57 +270,8 @@ int main(int argc, char **argv) {
     std::cout << "\nRESULT (cpu):\n";
     print_csr(t);
 #endif
-
-    /* Load to GPU Memory */
-    int *d_rows, *d_cols;
-    float *d_v;
-    CHECK_CUDA( cudaMalloc((void**) &d_cols, matrix.col_index.size() * sizeof(int)) );
-    CHECK_CUDA( cudaMalloc((void**) &d_rows, matrix.row_index.size() * sizeof(int)) );
-    CHECK_CUDA( cudaMalloc((void**) &d_v,    matrix.v.size() * sizeof(float)) );
-
-    CHECK_CUDA( 
-            cudaMemcpy(
-                    d_cols, 
-                    matrix.col_index.data(),
-                    matrix.col_index.size() * sizeof(int),
-                    cudaMemcpyHostToDevice
-            )
-    );
-
-    CHECK_CUDA( 
-            cudaMemcpy(
-                    d_rows, 
-                    matrix.row_index.data(),
-                    matrix.row_index.size() * sizeof(int),
-                    cudaMemcpyHostToDevice
-            )
-    );
-
-    CHECK_CUDA( 
-            cudaMemcpy(
-                    d_v,
-                    matrix.v.data(),
-                    matrix.v.size() * sizeof(float),
-                    cudaMemcpyHostToDevice
-            )
-    );
-
-    /* Load to cuSPARSE */
-    cusparseHandle_t handle = nullptr;
-    cusparseSpMatDescr_t A;
-    CHECK_CUSPARSE( cusparseCreate(&handle) )
-    CHECK_CUSPARSE(
-            cusparseCreateCsr(
-                &A,
-                matrix.rows,
-                matrix.cols,
-                matrix.v.size(),
-                d_rows, d_cols,
-                d_v,
-                CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
-                CUSPARSE_INDEX_BASE_ZERO, CUDA_R_32F
-            )
-    )
+    auto handle = get_handle();
+    matrix.to_gpu(handle);
 
     /* Create buffers for the transposed matrix */
     int *d_rows_t, *d_cols_t;
@@ -268,7 +290,7 @@ int main(int argc, char **argv) {
             matrix.rows,
             matrix.cols,
             matrix.v.size(),
-            d_v, d_rows, d_cols,
+            matrix.d_v, matrix.d_rows, matrix.d_cols,
             d_v_t, d_cols_t, d_rows_t,
             CUDA_R_32F,
             CUSPARSE_ACTION_NUMERIC,
@@ -285,7 +307,7 @@ int main(int argc, char **argv) {
             matrix.rows,
             matrix.cols,
             matrix.v.size(),
-            d_v, d_rows, d_cols,
+            matrix.d_v, matrix.d_rows, matrix.d_cols,
             d_v_t, d_cols_t, d_rows_t,
             CUDA_R_32F,
             CUSPARSE_ACTION_NUMERIC,
