@@ -58,13 +58,8 @@ cusparseHandle_t get_handle() {
     return handle;
 }
 
-struct COO_entry {
-    int32_t i;
-    int32_t j;
-    float   v;
-};
-
-std::shared_ptr<CSR> load_matrix_mm(std::string path) {
+std::tuple<std::vector<int32_t>, std::vector<int32_t>, std::vector<float>, size_t, size_t, size_t> 
+load_entries(std::string path) {
     /* load file data */
     std::ifstream f(path);
     if (f.fail()) {
@@ -74,38 +69,54 @@ std::shared_ptr<CSR> load_matrix_mm(std::string path) {
     while (f.peek() == '%')
         f.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
-    CSR out;
     size_t rows, cols, nnz;
-    std::vector<COO_entry> entries;
     f >> rows >> cols >> nnz;
+
+    std::vector<int32_t> x;
+    std::vector<int32_t> y;
+    std::vector<float> v;
+
+    for (size_t c = 0; c < nnz; c++) {
+        int32_t i, j;
+        float value;
+        f >> i >> j >> value;
+        x.push_back(i-1);
+        y.push_back(j-1);
+        v.push_back(value);
+    }
+
+    f.close();
+    return std::make_tuple(x, y, v, rows, cols, nnz);
+}
+
+std::shared_ptr<CSR> load_matrix_mm(std::string path) {
+    /* Load entries */
+    auto [x, y, v, rows, cols, nnz] = load_entries(path);
+
+    /* Create the CSR matrix */
+    CSR out;
     out.rows = rows;
     out.cols = cols;
     out.nnz = nnz;
 
-    for (size_t c = 0; c < nnz; c++) {
-        int32_t i, j;
-        float vue;
-        f >> i >> j >> vue;
-        entries.push_back(COO_entry{i-1, j-1, vue});
-    }
-
-    f.close();
-
     /* sort COO entries */
-    auto compare = [](const COO_entry& a, const COO_entry& b) {
-        if (a.i < b.i) return true;
-        if (a.i == b.i) return a.j < b.j;
-        return false;
-    };
-    std::sort(entries.begin(), entries.end(), compare);
+    std::vector<size_t> indices;
+    for (size_t i = 0; i < x.size(); i++) indices.push_back(i);
+    std::stable_sort(indices.begin(), indices.end(),
+        [&x,&y](size_t a, size_t b) {
+            if (x[a] < x[b]) return true;
+            if (x[a] == x[b]) return x[a] < x[b];
+            return false;
+        }
+    );
 
     /* generate CSR matrix from sorted COO */
     out.row_index = std::vector<int32_t>(rows+1, 0);
     for (size_t i = 0; i < nnz; i++) {
-        auto entry = entries[i];
-        out.row_index[entry.i + 1] += 1;
-        out.col_index.push_back(entry.j);
-        out.v.push_back(entry.v);
+        size_t entry = indices[i];
+        out.row_index[x[entry] + 1] += 1;
+        out.col_index.push_back(y[entry]);
+        out.v.push_back(v[entry]);
     }
     for (size_t i = 0; i < rows; i++) {
         out.row_index[i + 1] += out.row_index[i];
