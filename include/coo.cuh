@@ -25,5 +25,5 @@ struct COO {
 };
 
 std::shared_ptr<COO> load_coo_mm(std::string path);
-std::shared_ptr<COO> transpose_coo(std::shared_ptr<COO> matrix);
+std::tuple<std::shared_ptr<COO>, float> transpose_coo(std::shared_ptr<COO> matrix);
 void print_coo(std::shared_ptr<COO> matrix);

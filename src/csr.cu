@@ -109,7 +109,7 @@ CSR::~CSR() {
     }
 }
 
-std::shared_ptr<CSR> transpose_cusparse(std::shared_ptr<CSR> matrix, cusparseHandle_t handle) {
+std::tuple<std::shared_ptr<CSR>, float> transpose_cusparse(std::shared_ptr<CSR> matrix, cusparseHandle_t handle) {
     /* Create buffers for the transposed matrix */
     int *d_rows_t, *d_cols_t;
     float *d_v_t;
@@ -120,6 +120,13 @@ std::shared_ptr<CSR> transpose_cusparse(std::shared_ptr<CSR> matrix, cusparseHan
     /* Transpose by converting from CSR to CSC */
     size_t bufferSize;
     void *buffer;
+
+    /* Record time using CUDA */
+    cudaEvent_t start, stop;
+    float time;
+    CHECK_CUDA( cudaEventCreate(&start) )
+    CHECK_CUDA( cudaEventCreate(&stop) )
+    CHECK_CUDA( cudaEventRecord(start, 0) )
 
     CHECK_CUSPARSE(
         cusparseCsr2cscEx2_bufferSize(
@@ -189,6 +196,12 @@ std::shared_ptr<CSR> transpose_cusparse(std::shared_ptr<CSR> matrix, cusparseHan
             )
     );
 
+    CHECK_CUDA( cudaEventRecord(stop, 0) )
+    CHECK_CUDA( cudaEventSynchronize(stop) )
+    CHECK_CUDA( cudaEventElapsedTime(&time, start, stop) )
+    CHECK_CUDA( cudaEventDestroy(start) )
+    CHECK_CUDA( cudaEventDestroy(stop) )
+
     /* Create the transposed matrix */
     CSR out;
     out.name = "C";
@@ -213,7 +226,8 @@ std::shared_ptr<CSR> transpose_cusparse(std::shared_ptr<CSR> matrix, cusparseHan
 
     auto r = std::make_shared<CSR>(out);
     r->in_gpu = true;
-    return r;
+    
+    return std::make_tuple(r, time);
 }
 
 void print_csr(std::shared_ptr<CSR> matrix) {

@@ -35,27 +35,28 @@ int main(int argc, char **argv)
 #endif
 
     /* Calculate data size */
-    size_t com_bytes = matrix->nnz*sizeof(unsigned) + matrix->nnz*sizeof(unsigned) + matrix->nnz*sizeof(float);
+    size_t coo_bytes = matrix->nnz*sizeof(unsigned) + matrix->nnz*sizeof(unsigned) + matrix->nnz*sizeof(float);
     size_t unc_bytes = matrix->n_rows*matrix->n_cols*sizeof(float);
     std::cout << "Matrix of Dimensions [" << matrix->n_rows << "," << matrix->n_cols << "]" << std::endl;
-    std::cout << "Compressed size: " << com_bytes/1024./1024. << " MB" << std::endl;
+    std::cout << "COO Size: " << coo_bytes/1024./1024. << " MB" << std::endl;
     std::cout << "Uncompressed: " << unc_bytes/1024./1024./1024. << " GB" << std::endl;
     std::cout << "Number of trials: " << TRIALS << " Block size: " << BLOCK_SIZE << std::endl;
     
     std::cout << std::endl << "COO Transposition" << std::endl;
     double total_time = 0.0;
     for (int i = 0; i < TRIALS; i++) {
-        auto t1 = std::chrono::high_resolution_clock::now();
-        auto t = transpose_coo(matrix);
+        //auto t1 = std::chrono::high_resolution_clock::now();
+        auto [t, time] = transpose_coo(matrix);
 #ifdef DEBUG
         print_coo(t);
 #endif
-        auto t2 = std::chrono::high_resolution_clock::now();
-        auto ms_int = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1);
-        std::chrono::duration<double, std::milli> ms_double = t2 - t1;
-        total_time += ms_double.count();
+        //auto t2 = std::chrono::high_resolution_clock::now();
+        //auto ms_int = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1);
+        //std::chrono::duration<double, std::milli> ms_double = t2 - t1;
+        //total_time += ms_double.count();
+        total_time += time;
     }
-    std::cout << "Bandwidth (compressed): " << (com_bytes*TRIALS / 1024. / 1024.) / (total_time / 1000.) << " MB/s" << std::endl;
+    std::cout << "Bandwidth (compressed): " << (coo_bytes*TRIALS / 1024. / 1024.) / (total_time / 1000.) << " MB/s" << std::endl;
     std::cout << "Bandwidth (uncompressed): " << (unc_bytes*TRIALS / 1024. / 1024. / 1024.) / (total_time / 1000.) << " GB/s" << std::endl;
     std::cout << "Total time: " << total_time/1000. << "s" << std::endl;
 
@@ -63,22 +64,25 @@ int main(int argc, char **argv)
     auto handle = get_handle();
     auto matrix_csr = load_matrix_mm(argv[1]);
     matrix_csr->to_gpu(handle);
+    size_t csr_bytes = matrix_csr->row_index.size()*sizeof(unsigned) + matrix_csr->col_index.size()*sizeof(unsigned) + matrix_csr->nnz*sizeof(float);
     
     std::cout << std::endl << "CSR Transposition" << std::endl;
+    std::cout << "CSR Size: " << csr_bytes/1024./1024. << " MB" << std::endl;
     total_time = 0.0;
     for (int i = 0; i < TRIALS; i++)
     {
-        auto t1 = std::chrono::high_resolution_clock::now();
-        auto t = transpose_cusparse(matrix_csr, handle);
+        //auto t1 = std::chrono::high_resolution_clock::now();
+        auto [t, time] = transpose_cusparse(matrix_csr, handle);
 #ifdef DEBUG
         print_csr(t);
 #endif
-        auto t2 = std::chrono::high_resolution_clock::now();
-        auto ms_int = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1);
-        std::chrono::duration<double, std::milli> ms_double = t2 - t1;
-        total_time += ms_double.count();
+        //auto t2 = std::chrono::high_resolution_clock::now();
+        //auto ms_int = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1);
+        //std::chrono::duration<double, std::milli> ms_double = t2 - t1;
+        //total_time += ms_double.count();
+        total_time += time;
     }
-    std::cout << "Bandwidth (compressed): " << (com_bytes*TRIALS / 1024. / 1024.) / (total_time / 1000.) << " MB/s" << std::endl;
+    std::cout << "Bandwidth (compressed): " << (csr_bytes*TRIALS / 1024. / 1024.) / (total_time / 1000.) << " MB/s" << std::endl;
     std::cout << "Bandwidth (uncompressed): " << (unc_bytes*TRIALS / 1024. / 1024. / 1024.) / (total_time / 1000.) << " GB/s" << std::endl;
     std::cout << "Total time: " << total_time/1000. << "s" << std::endl;
 }

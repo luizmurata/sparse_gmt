@@ -36,5 +36,5 @@ struct CSR {
 
 cusparseHandle_t get_handle();
 std::shared_ptr<CSR> load_matrix_mm(std::string path);
-std::shared_ptr<CSR> transpose_cusparse(std::shared_ptr<CSR> matrix, cusparseHandle_t handle);
+std::tuple<std::shared_ptr<CSR>, float> transpose_cusparse(std::shared_ptr<CSR> matrix, cusparseHandle_t handle);
 void print_csr(std::shared_ptr<CSR> matrix);

@@ -304,7 +304,7 @@ std::shared_ptr<COO> load_coo_mm(std::string path) {
     return r;
 }
 
-std::shared_ptr<COO> transpose_coo(std::shared_ptr<COO> matrix) {
+std::tuple<std::shared_ptr<COO>, float> transpose_coo(std::shared_ptr<COO> matrix) {
     /* Allocate device buffers*/
     size_t nnz = matrix->nnz;
     unsigned *outX = new unsigned[nnz];
@@ -316,6 +316,13 @@ std::shared_ptr<COO> transpose_coo(std::shared_ptr<COO> matrix) {
     CHECK_CUDA(cudaMalloc(&d_outY, sizeof(int) * nnz))
     CHECK_CUDA(cudaMalloc(&d_outV, sizeof(float) * nnz))
     
+    /* Record time using CUDA */
+    cudaEvent_t start, stop;
+    float time;
+    CHECK_CUDA( cudaEventCreate(&start) )
+    CHECK_CUDA( cudaEventCreate(&stop) )
+    CHECK_CUDA( cudaEventRecord(start, 0) )
+    
     /* Sort entries but with X and Y swapped */
     coo_radix_sort(matrix->d_y, matrix->d_x, matrix->d_v, d_outX, d_outY, d_outV, matrix->n_cols, matrix->n_rows, nnz);
 
@@ -323,6 +330,12 @@ std::shared_ptr<COO> transpose_coo(std::shared_ptr<COO> matrix) {
     CHECK_CUDA(cudaMemcpy(outX, d_outX, sizeof(int) * nnz, cudaMemcpyDeviceToHost))
     CHECK_CUDA(cudaMemcpy(outY, d_outY, sizeof(int) * nnz, cudaMemcpyDeviceToHost))
     CHECK_CUDA(cudaMemcpy(outV, d_outV, sizeof(float) * nnz, cudaMemcpyDeviceToHost))
+
+    CHECK_CUDA( cudaEventRecord(stop, 0) )
+    CHECK_CUDA( cudaEventSynchronize(stop) )
+    CHECK_CUDA( cudaEventElapsedTime(&time, start, stop) )
+    CHECK_CUDA( cudaEventDestroy(start) )
+    CHECK_CUDA( cudaEventDestroy(stop) )
 
     /* Initialize matrix */
     COO out;
@@ -338,7 +351,7 @@ std::shared_ptr<COO> transpose_coo(std::shared_ptr<COO> matrix) {
 
     auto r = std::make_shared<COO>(out);
     r->in_gpu = true;
-    return r;
+    return std::make_tuple(r, time);
 }
 
 COO::~COO() {
