@@ -9,6 +9,7 @@ cusparseHandle_t get_handle() {
 std::shared_ptr<CSR> load_matrix_mm(std::string path) {
     /* Load entries */
     auto [x, y, v, rows, cols, nnz] = load_entries(path);
+    auto coords = std::make_tuple(x, y);
 
     /* Create the CSR matrix */
     CSR out;
@@ -20,9 +21,10 @@ std::shared_ptr<CSR> load_matrix_mm(std::string path) {
     std::vector<size_t> indices;
     for (size_t i = 0; i < x.size(); i++) indices.push_back(i);
     std::stable_sort(indices.begin(), indices.end(),
-        [&x,&y](size_t a, size_t b) {
-            if (x[a] < x[b]) return true;
-            if (x[a] == x[b]) return x[a] < x[b];
+        [&coords](size_t a, size_t b) {
+            if (std::get<0>(coords)[a] < std::get<0>(coords)[b]) return true;
+            if (std::get<0>(coords)[a] == std::get<0>(coords)[b])
+	    	return std::get<1>(coords)[a] < std::get<1>(coords)[b];
             return false;
         }
     );

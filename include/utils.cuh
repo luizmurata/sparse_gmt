@@ -1,6 +1,8 @@
 #pragma once
 #include <fstream>
 #include <vector>
+#include <limits>
+#include <tuple>
 
 #define CHECK_CUDA(func)                                                       \
 {                                                                              \
